@@ -37,23 +37,79 @@ if [ ! -e "$home" ]; then
 fi
 [ -d "$home" ] || { echo "Not a directory: $home" >&2; exit 1; }
 
-umask 077
-if [ -n "${SSH_PASSWORD:-}" ]; then
-  password="$SSH_PASSWORD"
-  rm -f /run/ssh-initial-password
-elif [ -s /run/ssh-initial-password ]; then
-  password="$(cat /run/ssh-initial-password)"
-else
-  password="$(od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]')"
-  printf '%s\n' "$password" > /run/ssh-initial-password
+secure_auth_component() {
+  path="$1"
+  kind="$2"
+
+  [ ! -L "$path" ] || return 1
+  if [ "$kind" = directory ]; then
+    [ -d "$path" ] || return 1
+    needed_owner=0100
+    needed_group=0010
+    needed_other=0001
+  else
+    [ -f "$path" ] && [ -s "$path" ] || return 1
+    needed_owner=0400
+    needed_group=0040
+    needed_other=0004
+  fi
+
+  metadata="$(stat -c '%u:%g:%a' -- "$path" 2>/dev/null)" || return 1
+  owner="${metadata%%:*}"
+  metadata="${metadata#*:}"
+  group="${metadata%%:*}"
+  perms="${metadata#*:}"
+  case "$perms" in ''|*[!0-7]*) return 1 ;; esac
+  mode=$((0$perms))
+
+  [ "$owner" = 0 ] || [ "$owner" = "$SSH_UID" ] || return 1
+  [ $((mode & 0022)) -eq 0 ] || return 1
+
+  if [ "$owner" = "$SSH_UID" ]; then
+    [ $((mode & needed_owner)) -ne 0 ] || return 1
+  elif [ "$group" = "$SSH_GID" ]; then
+    [ $((mode & needed_group)) -ne 0 ] || return 1
+  else
+    [ $((mode & needed_other)) -ne 0 ] || return 1
+  fi
+}
+
+key_auth=no
+if secure_auth_component "$home" directory && \
+   secure_auth_component "$home/.ssh" directory; then
+    if secure_auth_component "$home/.ssh/authorized_keys" file && \
+       ssh-keygen -l -f "$home/.ssh/authorized_keys" >/dev/null 2>&1; then
+      key_auth=yes
+      break
+    fi
 fi
-printf '%s:%s\n' "$SSH_USER" "$password" | chpasswd
-unset password
+
+mkdir -p /run/sshd
+umask 077
+if [ "$key_auth" = yes ]; then
+  passwd -l "$SSH_USER" >/dev/null
+  rm -f /run/ssh-initial-password
+  printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' \
+    > /run/sshd/00-key-only.conf
+else
+  rm -f /run/sshd/00-key-only.conf
+
+  if [ -n "${SSH_PASSWORD:-}" ]; then
+    password="$SSH_PASSWORD"
+    rm -f /run/ssh-initial-password
+  elif [ -s /run/ssh-initial-password ]; then
+    password="$(cat /run/ssh-initial-password)"
+  else
+    password="$(od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]')"
+    printf '%s\n' "$password" > /run/ssh-initial-password
+  fi
+  printf '%s:%s\n' "$SSH_USER" "$password" | chpasswd
+  unset password
+fi
 
 if [ ! -s /var/lib/ssh/ssh_host_ed25519_key ]; then
   ssh-keygen -q -t ed25519 -N '' -f /var/lib/ssh/ssh_host_ed25519_key
 fi
 
-mkdir -p /run/sshd
 /usr/sbin/sshd -t -f /etc/ssh/sshd_config
 exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
