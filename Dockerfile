@@ -21,11 +21,21 @@ RUN apt-get update && \
       'Port 22' \
       'HostKey /var/lib/ssh/ssh_host_ed25519_key' \
       'PermitRootLogin no' \
+      'LoginGraceTime 30' \
+      'MaxAuthTries 4' \
       'PubkeyAuthentication yes' \
+      'AuthenticationMethods publickey' \
       'AuthorizedKeysFile .ssh/authorized_keys' \
       'PasswordAuthentication yes' \
       'KbdInteractiveAuthentication no' \
       'UsePAM yes' \
+      'GSSAPIAuthentication no' \
+      'GSSAPIKeyExchange no' \
+      'X11Forwarding no' \
+      'PermitTunnel no' \
+      'MaxStartups 10:30:60' \
+      'PerSourceMaxStartups 4' \
+      'PerSourcePenalties authfail:10s min:20s max:10m' \
       'Subsystem sftp /usr/lib/openssh/sftp-server' \
       > /etc/ssh/sshd_config
 
